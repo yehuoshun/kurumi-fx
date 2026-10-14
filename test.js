@@ -1,0 +1,102 @@
+/* Kurumi FX 引擎冒烟测试：node test.js */
+'use strict';
+const { Engine, COUNTRIES, LEV_OPTIONS } = require('./engine.js');
+
+let pass = 0, fail = 0;
+function assert(name, cond, extra) {
+  if (cond) { pass++; console.log('  ✅ ' + name); }
+  else { fail++; console.log('  ❌ ' + name + (extra ? ' | ' + JSON.stringify(extra) : '')); }
+}
+
+/* T1 正常：市价买入成交，现金减少、持仓增加 */
+{
+  const e = new Engine();
+  const code = 'TVT';
+  const qty = 10;
+  const r = e.placeOrder('buy', code, qty, 0, true);
+  assert('T1 市价单成交', r.ok && r.filled > 0, r);
+  assert('T1 现金减少', e.state.cash < 100000, e.state.cash);
+  assert('T1 持仓>0', e.state.positions[code].qty > 0, e.state.positions[code]);
+  assert('T1 净值不变（零和：现金+市值=初始）', Math.abs(e.netWorth() - 100000) < 1, e.netWorth());
+}
+
+/* T2 边界：杠杆 2 倍购买力 = 现金×2 */
+{
+  const e = new Engine();
+  e.state.lev = 2;
+  assert('T2 2x购买力', Math.abs(e.buyingPower() - 200000) < 0.01, e.buyingPower());
+}
+
+/* T3 边界：无穷杠杆购买力 Infinity */
+{
+  const e = new Engine();
+  e.state.lev = 'inf';
+  assert('T3 inf购买力', e.buyingPower() === Infinity);
+}
+
+/* T4 异常：数量 0 / 负数 拒单 */
+{
+  const e = new Engine();
+  const r0 = e.placeOrder('buy', 'TVT', 0, 0, true);
+  const rn = e.placeOrder('buy', 'TVT', -5, 0, true);
+  assert('T4 数量0拒单', r0.ok === false, r0);
+  assert('T4 负数拒单', rn.ok === false, rn);
+}
+
+/* T5 异常：无持仓卖单拒单 */
+{
+  const e = new Engine();
+  const r = e.placeOrder('sell', 'TVT', 1, 0, true);
+  assert('T5 空仓卖出拒单', !r.ok && r.msg.includes('持仓不足'), r);
+}
+
+/* T6 限价挂单 + 撤单 */
+{
+  const e = new Engine();
+  const mk = e.state.mk['TVT'];
+  const lowPrice = mk.mid * 0.5; // 远低于现价，无法立即成交 -> 挂单
+  const r = e.placeOrder('buy', 'TVT', 1, lowPrice, false);
+  assert('T6 限价挂单', r.ok && e.state.orders.length === 1, { r, orders: e.state.orders.length });
+  const oid = e.state.orders[0].id;
+  e.cancelOrder(oid);
+  assert('T6 撤单生效', e.state.orders.length === 0);
+}
+
+/* T7 剧本：一键同意 -> 闪崩 -> 强平 -> 负债保留 */
+{
+  const e = new Engine();
+  const r = e.acceptAdvice();
+  assert('T7 一键同意成交', r.ok && e.state.holding === true && e.state.crash !== null, r);
+  const debtBefore = e.tradeDebt();
+  for (let i = 0; i < 30 && !e.state.liq; i++) e.step(); // 30 tick 内必爆
+  assert('T7 闪崩后强平', e.state.liq === true, { liq: e.state.liq, lastLiq: e.state.lastLiq });
+  if (e.state.lastLiq) {
+    assert('T7 亏损口径>0', e.state.lastLiq.lost > 0, e.state.lastLiq.lost);
+    assert('T7 结算含负债', typeof e.state.lastLiq.debt === 'number');
+  }
+  console.log('    剧本数据:', JSON.stringify(e.state.lastLiq));
+}
+
+/* T8 普通杠杆下强平：手动高杠杆买 -> 跌到净值<=0 */
+{
+  const e = new Engine();
+  e.state.lev = 50;
+  const code = 'HLT';
+  const r = e.placeOrder('buy', code, 25000, 0, true); // 50x 杠杆满仓买入（市值≈500万）
+  assert('T8 高杠杆买入成交', r.ok && r.filled > 0, r);
+  let liq = false;
+  for (let i = 0; i < 200 && !liq; i++) { e.step(); liq = e.state.liq; }
+  assert('T8 200tick 内触发强平（大概率）', liq, { liq });
+}
+
+/* T9 持久化可序列化（JSON 无死循环） */
+{
+  const e = new Engine();
+  e.placeOrder('buy', 'TAL', 5, 0, true);
+  e.step();
+  const s = JSON.stringify(e.state);
+  assert('T9 state 可 JSON 序列化', typeof s === 'string' && s.length > 100, s.length);
+}
+
+console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
+process.exit(fail ? 1 : 0);

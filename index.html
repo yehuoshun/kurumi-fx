@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kurumi FX · 久留美外汇模拟器</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --line:#30363d; --tx:#e6edf3; --dim:#8b949e;
+    --up:#3fb950; --down:#f85149; --acc:#d29922; --neu:#58a6ff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--tx);font-family:ui-monospace,Menlo,Consolas,"PingFang SC",monospace;font-size:14px;min-height:100vh}
+  #app{max-width:1080px;margin:0 auto;padding:14px;display:grid;grid-template-columns:1fr 320px;gap:12px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
+  h2{font-size:13px;color:var(--dim);margin-bottom:8px;font-weight:600;letter-spacing:.5px}
+  /* 顶栏 */
+  #bar{grid-column:1/-1;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  #bar .cell{display:flex;flex-direction:column;gap:2px}
+  #bar .k{font-size:11px;color:var(--dim)}
+  #bar .v{font-size:16px;font-weight:700}
+  #bar .controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+  button{background:#21262d;border:1px solid var(--line);color:var(--tx);padding:6px 12px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:13px}
+  button:hover{background:#30363d}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.danger{border-color:var(--down);color:var(--down)}
+  select,input{background:#0d1117;border:1px solid var(--line);color:var(--tx);padding:6px 8px;border-radius:6px;font-family:inherit;font-size:13px}
+  input{width:100%}
+  /* 行情卡片 */
+  #markets{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .mcard{border:1px solid var(--line);border-radius:10px;padding:10px;cursor:pointer;background:var(--panel);transition:border-color .15s}
+  .mcard.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+  .mcard .nm{font-weight:700;font-size:14px}
+  .mcard .cc{font-size:11px;color:var(--dim)}
+  .mcard .px{font-size:18px;font-weight:700;margin-top:4px}
+  .mcard .chg{font-size:12px;margin-top:2px}
+  .up{color:var(--up)} .down{color:var(--down)}
+  /* 交易区 */
+  #left{display:flex;flex-direction:column;gap:12px}
+  #bookTable{width:100%;border-collapse:collapse;font-size:13px}
+  #bookTable td{padding:3px 6px;text-align:right}
+  #bookTable .side{width:40px;text-align:left}
+  #midRow td{font-weight:700;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  canvas#chart{width:100%;height:140px;background:#0d1117;border:1px solid var(--line);border-radius:8px}
+  .seg{display:flex;gap:8px;margin-bottom:8px}
+  .seg button{flex:1}
+  .seg button.act{background:var(--acc);border-color:var(--acc);color:#0d1117}
+  .rows{max-height:150px;overflow-y:auto;font-size:13px}
+  .rows .r{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #21262d}
+  .rows .r:last-child{border-bottom:none}
+  .tag{display:inline-block;padding:1px 6px;border-radius:4px;font-size:11px}
+  .tag.buy{background:#12331c;color:var(--up)} .tag.sell{background:#3d1216;color:var(--down)}
+  /* 久留美 */
+  #mgr .news{margin-bottom:8px;padding:8px;border-radius:8px;background:#1c2333;border:1px solid #2a3a55}
+  #mgr .news .tag{background:var(--acc);color:#0d1117;margin-right:6px}
+  #mgr .news .cd{color:var(--dim);float:right}
+  #mgr .say{min-height:44px;padding:8px;border-left:3px solid var(--acc);background:#1b1914;border-radius:0 8px 8px 0;margin-bottom:8px;line-height:1.5}
+  #plan{margin-bottom:8px;font-size:13px}
+  #plan .r{display:flex;justify-content:space-between;padding:3px 0}
+  #plan .r b.hot{color:var(--acc)}
+  #agree{width:100%;padding:10px;font-size:15px;font-weight:700;background:#7a4a00;border-color:#a06600;color:#ffd980}
+  /* 爆仓 */
+  #fog{position:fixed;inset:0;background:rgba(80,0,0,.72);display:none;align-items:center;justify-content:center;z-index:99}
+  #fog.show{display:flex}
+  #fog .box{background:#1a0d0d;border:1px solid var(--down);border-radius:12px;padding:22px;width:320px;text-align:center;animation:shake .45s}
+  #fog h1{color:var(--down);margin-bottom:10px;font-size:18px}
+  #fog .row{display:flex;justify-content:space-between;padding:5px 0;font-size:14px}
+  #fog .row b{color:#ff9a93}
+  @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+  #foot{grid-column:1/-1;font-size:11px;color:var(--dim);line-height:1.7;border-top:1px solid var(--line);padding-top:10px;text-align:center}
+  @media (max-width:860px){#app{grid-template-columns:1fr}#markets{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div id="app">
+  <!-- 顶栏 -->
+  <div id="bar" class="panel">
+    <div class="cell"><span class="k">久久币余额</span><span class="v" id="b-cash">—</span></div>
+    <div class="cell"><span class="k">账户净值</span><span class="v" id="b-net">—</span></div>
+    <div class="cell"><span class="k">总盈亏</span><span class="v" id="b-pnl">—</span></div>
+    <div class="cell"><span class="k">最大回撤</span><span class="v" id="b-dd">—</span></div>
+    <div class="cell"><span class="k">成交笔数</span><span class="v" id="b-trades">0</span></div>
+    <div class="controls">
+      <span class="k" style="color:var(--dim)">杠杆</span>
+      <select id="lev"></select>
+      <button id="btn-reset" class="danger">重置人生</button>
+    </div>
+  </div>
+  <!-- 行情 -->
+  <div id="markets"></div>
+  <!-- 左：盘口+图表+列表 -->
+  <div id="left">
+    <div class="panel">
+      <h2 id="mk-title">盘口</h2>
+      <table id="bookTable">
+        <tbody id="bookBody"></tbody>
+      </table>
+      <canvas id="chart"></canvas>
+    </div>
+    <div class="panel">
+      <h2>持仓</h2>
+      <div class="rows" id="posRows"><div class="r">空仓，还没当上韭菜</div></div>
+    </div>
+    <div class="panel">
+      <h2>委托 / 成交</h2>
+      <div class="rows" id="ordRows"></div>
+    </div>
+  </div>
+  <!-- 右：下单 + 久留美 -->
+  <div id="right" style="display:flex;flex-direction:column;gap:12px">
+    <div class="panel">
+      <h2 id="tra-title">下注单 · 提瓦特</h2>
+      <div class="seg" id="segSide">
+        <button data-v="buy" class="act">买入</button><button data-v="sell">卖出</button>
+      </div>
+      <div class="seg" id="segType">
+        <button data-v="market" class="act">市价</button><button data-v="limit">限价</button>
+      </div>
+      <div style="margin-bottom:8px"><span class="k" style="color:var(--dim)">价格</span><input id="in-price" placeholder="市价单自动填" type="number" step="0.01"></div>
+      <div style="margin-bottom:8px"><span class="k" style="color:var(--dim)">数量</span><input id="in-qty" placeholder="委托数量" type="number" step="1"></div>
+      <div style="margin-bottom:8px;color:var(--dim);font-size:12px" id="est">预计成交额：—</div>
+      <button id="btn-submit" style="width:100%;padding:10px;font-weight:700">提交委托</button>
+    </div>
+    <div class="panel" id="mgr">
+      <h2>FX 客户经理 · 久留美</h2>
+      <div class="news"><span class="tag" id="ev-tag">独家</span><span id="ev-txt"></span><span class="cd" id="ev-cd"></span></div>
+      <div class="say" id="mgr-say">加载中……</div>
+      <div id="plan"></div>
+      <button id="agree">一键同意</button>
+    </div>
+  </div>
+  <!-- 免责 -->
+  <div id="foot">
+    Kurumi FX · 纯娱乐项目 —— 所有货币均为虚构数字（含「久久币」），无任何实际价值，不构成投资建议，不涉及真实外汇交易。<br>
+    货币与地名系对《FX战士久留美》及多款游戏世界观的戏仿引用，与各厂商无关。交易有风险，入市需谨慎 —— 想玩真钱前先想想久留美。
+  </div>
+</div>
+<div id="fog">
+  <div class="box">
+    <h1>💥 爆仓结算</h1>
+    <div class="row"><span>本次爆仓亏损</span><b id="l-loss">—</b></div>
+    <div class="row"><span>融资负债</span><b id="l-debt">—</b></div>
+    <div class="row"><span>账户净值</span><b id="l-net">—</b></div>
+    <div class="row"><span>原因</span><b id="l-reason">—</b></div>
+    <p style="margin-top:10px;font-size:12px;color:#ff9a93">杠杆放大收益，也放大亏损。想翻本？久留美等着你。</p>
+    <button id="l-close" style="margin-top:12px;width:100%">我知道了</button>
+  </div>
+</div>
+<script src="engine.js"></script>
+<script>
+'use strict';
+const { Engine, COUNTRIES, LEV_OPTIONS } = window;
+
+/* ================= DOM ================= */
+const $ = id => document.getElementById(id);
+const fmt = n => (Math.round(n * 100) / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
+const codes = Object.keys(COUNTRIES);
+
+const engine = new Engine();
+engine.load();
+let sel = codes[0];                      // 当前交易的国家
+let side = 'buy', otype = 'market';
+let liqShown = false;
+
+/* ================= 顶栏 ================= */
+function initLevSel() {
+  const s = $('lev');
+  s.innerHTML = '';
+  for (const lv of LEV_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = lv; o.textContent = lv === 'inf' ? '∞ 无限' : lv + '×';
+    s.appendChild(o);
+  }
+  s.value = String(engine.state.lev);
+  s.onchange = () => { engine.state.lev = s.value === 'inf' ? 'inf' : Number(s.value); renderBar(); };
+}
+function renderBar() {
+  const st = engine.state, n = engine.netWorth();
+  const start = st.netStart === null ? n : st.netStart;
+  const pnl = n - start;
+  $('b-cash').textContent = fmt(st.cash) + ' 久久币';
+  $('b-net').textContent = fmt(n);
+  $('b-pnl').textContent = (pnl >= 0 ? '+' : '') + fmt(pnl);
+  $('b-pnl').className = pnl >= 0 ? 'v up' : 'v down';
+  $('b-dd').textContent = st.maxDD > 0 ? '−' + (st.maxDD * 100).toFixed(1) + '%' : '0%';
+  $('b-dd').className = st.maxDD > 0.001 ? 'v down' : 'v';
+  $('b-trades').textContent = fmt(st.trades);
+}
+
+/* ================= 行情卡片 ================= */
+function renderMarkets() {
+  const box = $('markets');
+  box.innerHTML = '';
+  for (const c of codes) {
+    const cfg = COUNTRIES[c], mk = engine.state.mk[c];
+    const chg = (mk.mid - mk.prevClose) / mk.prevClose;
+    const up = chg >= 0;
+    const d = document.createElement('div');
+    d.className = 'mcard' + (c === sel ? ' sel' : '');
+    d.innerHTML =
+      '<div class="nm">' + cfg.name + '</div>' +
+      '<div class="cc">' + cfg.code + ' · ' + cfg.currency + ' · ' + cfg.bank + '</div>' +
+      '<div class="px ' + (up ? 'up' : 'down') + '">' + fmt(mk.mid) + '</div>' +
+      '<div class="chg ' + (up ? 'up' : 'down') + '">' + (up ? '▲ +' : '▼ ') + (chg * 100).toFixed(2) + '%</div>';
+    d.onclick = () => { sel = c; renderAll(); };
+    box.appendChild(d);
+  }
+}
+
+/* ================= 盘口 + 图 ================= */
+function renderBook() {
+  const cfg = COUNTRIES[sel], mk = engine.state.mk[sel];
+  $('mk-title').textContent = '盘口 · ' + cfg.name + '（1 ' + cfg.currency + ' = ' + fmt(mk.mid) + ' 久久币）';
+  $('tra-title').textContent = '下注单 · ' + cfg.name;
+  const body = $('bookBody');
+  let h = '';
+  for (let i = mk.asks.length - 1; i >= 0; i--) {
+    h += '<tr class="down"><td class="side">卖' + (i + 1) + '</td><td>' + fmt(mk.asks[i].p) + '</td><td>' + fmt(mk.asks[i].v) + '</td></tr>';
+  }
+  h += '<tr id="midRow" class="up"><td class="side">现价</td><td>' + fmt(mk.mid) + '</td><td>' + fmt(mk.vol) + ' 量</td></tr>';
+  for (let i = 0; i < mk.bids.length; i++) {
+    h += '<tr class="up"><td class="side">买' + (i + 1) + '</td><td>' + fmt(mk.bids[i].p) + '</td><td>' + fmt(mk.bids[i].v) + '</td></tr>';
+  }
+  body.innerHTML = h;
+  drawChart(mk);
+}
+function drawChart(mk) {
+  const cv = $('chart'), c = cv.getContext('2d'), w = cv.width = cv.clientWidth, hgt = cv.height = 140;
+  c.clearRect(0, 0, w, hgt);
+  const data = mk.line.length ? mk.line : [mk.mid];
+  let mn = Math.min.apply(null, data), mx = Math.max.apply(null, data);
+  if (mx - mn < 1e-9) { mx += 1; mn -= 1; }
+  const pad = (mx - mn) * 0.1; mn -= pad; mx += pad;
+  const X = i => 2 + (w - 4) * (i / (data.length - 1));
+  const Y = v => hgt - 6 - (hgt - 10) * ((v - mn) / (mx - mn));
+  c.beginPath();
+  for (let i = 0; i < data.length; i++) { i ? c.lineTo(X(i), Y(data[i])) : c.moveTo(X(i), Y(data[i])); }
+  const up = data[data.length - 1] >= (data[0] || 0);
+  c.strokeStyle = up ? '#3fb950' : '#f85149';
+  c.lineWidth = 1.6; c.lineJoin = 'round'; c.stroke();
+}
+
+/* ================= 持仓 / 委托 ================= */
+function renderPositions() {
+  const box = $('posRows');
+  const pos = engine.state.positions;
+  const list = codes.filter(c => pos[c] && pos[c].qty > 1e-9);
+  if (!list.length) { box.innerHTML = '<div class="r">空仓，还没当上韭菜</div>'; return; }
+  box.innerHTML = list.map(c => {
+    const p = pos[c], mk = engine.state.mk[c];
+    const avg = p.qty > 0 ? p.cost / p.qty : 0;
+    const pnl = p.qty * mk.mid - p.cost;
+    return '<div class="r"><span class="tag buy">持</span><span>' + COUNTRIES[c].currency + ' × ' + fmt(p.qty) + '</span>' +
+      '<span>均价 ' + fmt(avg) + '</span><span class="' + (pnl >= 0 ? 'up' : 'down') + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl) + '</span></div>';
+  }).join('');
+}
+function renderOrders() {
+  const box = $('ordRows');
+  const od = engine.state.orders;
+  if (!od.length && !engine.state.fills.length) { box.innerHTML = '<div class="r">无委托，无成交</div>'; return; }
+  let h = od.map(o => '<div class="r"><span class="tag ' + o.side + '">' + (o.side === 'buy' ? '挂买' : '挂卖') + '</span>' +
+    '<span>' + COUNTRIES[o.code].currency + ' @ ' + fmt(o.p) + '</span>' +
+    '<span>× ' + fmt(o.q) + '</span><button data-cancel="' + o.id + '" style="padding:1px 8px">撤</button></div>').join('');
+  h += engine.state.fills.slice(0, 8).map(f => '<div class="r"><span class="tag ' + f.side + '">' + (f.side === 'buy' ? '成买' : '成卖') + '</span>' +
+    '<span>' + COUNTRIES[f.code].currency + ' @ ' + fmt(f.p) + '</span><span>× ' + fmt(f.q) + '</span></div>').join('');
+  box.innerHTML = h;
+  box.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { engine.cancelOrder(Number(b.dataset.cancel)); renderOrders(); engine.persist(); });
+}
+
+/* ================= 下单 ================= */
+function bindTrading() {
+  $('segSide').querySelectorAll('button').forEach(b => b.onclick = () => {
+    side = b.dataset.v;
+    $('segSide').querySelectorAll('button').forEach(x => x.classList.toggle('act', x === b));
+    recalcEst();
+  });
+  $('segType').querySelectorAll('button').forEach(b => b.onclick = () => {
+    otype = b.dataset.v;
+    $('segType').querySelectorAll('button').forEach(x => x.classList.toggle('act', x === b));
+    $('in-price').disabled = otype === 'market';
+    recalcEst();
+  });
+  $('in-qty').oninput = recalcEst;
+  $('in-price').oninput = recalcEst;
+  $('btn-submit').onclick = () => {
+    const qty = parseFloat($('in-qty').value) || 0;
+    const limit = parseFloat($('in-price').value) || 0;
+    const r = engine.placeOrder(side, sel, qty, limit, otype === 'market');
+    if (!r.ok) { alert(r.msg); return; }
+    if (r.msg) alert(r.msg);
+    $('in-qty').value = '';
+    engine.persist(); renderAll();
+  };
+  $('btn-reset').onclick = () => { if (confirm('确定重置人生？所有数字归零重来。')) { engine.reset(); location.reload(); } };
+}
+function recalcEst() {
+  const qty = parseFloat($('in-qty').value) || 0;
+  const limit = otype === 'market' ? 0 : (parseFloat($('in-price').value) || 0);
+  const el = $('est');
+  if (!(qty > 0) || (otype === 'limit' && !(limit > 0))) { el.textContent = '预计成交额：—'; return; }
+  const q = engine.quote(side, sel, qty, limit, otype === 'market');
+  let s = '预计成交额：' + fmt(q.cost) + ' 久久币';
+  if (q.remain > 1e-6 && otype === 'limit') s += '（可成交 ' + fmt(q.filled) + '，剩余挂单）';
+  el.textContent = s;
+}
+
+/* ================= 久留美 ================= */
+function renderAdvice() {
+  const a = engine.advice();
+  $('ev-tag').textContent = a.ev.tag;
+  $('ev-txt').textContent = a.ev.txt;
+  $('ev-cd').textContent = a.evLeft + 's';
+  $('mgr-say').textContent = a.say;
+  $('plan').innerHTML =
+    '<div class="r"><span>目标</span><b>' + a.cfg.name + ' · ' + a.cfg.currency + '（' + a.cfg.code + '）</b></div>' +
+    '<div class="r"><span>时机</span><b>立即市价 · 现价 ' + fmt(a.mk.mid) + '</b></div>' +
+    '<div class="r"><span>数量</span><b>' + fmt(a.qty) + '（吃穿盘口）</b></div>' +
+    '<div class="r"><span>杠杆</span><b class="hot">∞ 倍 · 无限</b></div>' +
+    '<div class="r"><span>预计成交额</span><b class="hot">' + fmt(a.plan) + ' 久久币</b></div>';
+  const ag = $('agree');
+  ag.disabled = engine.state.liq || engine.state.holding;
+  ag.textContent = engine.state.liq ? '已平仓' : (engine.state.holding ? '持仓中…' : '一键同意');
+  ag.onclick = () => {
+    const r = engine.acceptAdvice();
+    if (!r.ok) { alert(r.msg); return; }
+    engine.persist(); renderAll();
+  };
+}
+
+/* ================= 爆仓 ================= */
+function checkLiq() {
+  const l = engine.state.lastLiq;
+  if (l && !liqShown) {
+    liqShown = true;
+    $('l-loss').textContent = '−' + fmt(l.lost) + ' 久久币';
+    $('l-debt').textContent = fmt(l.debt) + ' 久久币';
+    $('l-net').textContent = fmt(l.net) + ' 久久币';
+    $('l-reason').textContent = l.reason || '—';
+    $('fog').classList.add('show');
+  }
+}
+$('l-close').onclick = () => $('fog').classList.remove('show');
+
+/* ================= 主循环 ================= */
+function renderAll() { renderBar(); renderMarkets(); renderBook(); renderPositions(); renderOrders(); renderAdvice(); }
+initLevSel(); bindTrading();
+renderAll();
+setInterval(() => { engine.step(); engine.persist(); renderAll(); checkLiq(); }, 1000);
+</script></script>
+</body>
+</html>
