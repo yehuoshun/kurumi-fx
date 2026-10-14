@@ -68,6 +68,9 @@
   #fog .row b{color:#ff9a93}
   @keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
   #foot{grid-column:1/-1;font-size:11px;color:var(--dim);line-height:1.7;border-top:1px solid var(--line);padding-top:10px;text-align:center}
+  #tabs{grid-column:1/-1;display:flex;gap:8px}
+  #tabs button{flex:1;padding:8px;font-size:14px}
+  #tabs button.act{background:var(--acc);border-color:var(--acc);color:#0d1117}
   @media (max-width:860px){#app{grid-template-columns:1fr}#markets{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
@@ -85,6 +88,11 @@
       <select id="lev"></select>
       <button id="btn-reset" class="danger">重置人生</button>
     </div>
+  </div>
+  <!-- 市场 tab -->
+  <div id="tabs">
+    <button data-tab="fx" class="act">外汇 · 国家货币</button>
+    <button data-tab="fut">期货 · 游戏物资</button>
   </div>
   <!-- 行情 -->
   <div id="markets"></div>
@@ -149,18 +157,32 @@
 <script src="engine.js"></script>
 <script>
 'use strict';
-const { Engine, COUNTRIES, LEV_OPTIONS } = window;
+const { Engine, COUNTRIES, COMMODITIES, LEV_OPTIONS } = window;
 
 /* ================= DOM ================= */
 const $ = id => document.getElementById(id);
 const fmt = n => (Math.round(n * 100) / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
-const codes = Object.keys(COUNTRIES);
+const ALL = Object.assign({}, COUNTRIES, COMMODITIES);
 
 const engine = new Engine();
 engine.load();
-let sel = codes[0];                      // 当前交易的国家
+let tab = 'fx';                          // fx 外汇 / fut 期货
+const curCodes = () => tab === 'fx' ? engine.fxCodes : engine.futCodes;
+const isFut = c => engine.futCodes.indexOf(c) >= 0;
+let sel = curCodes()[0];                 // 当前交易的品种
 let side = 'buy', otype = 'market';
 let liqShown = false;
+
+/* ================= 市场 tab ================= */
+function bindTabs() {
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+    tab = b.dataset.tab;
+    document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('act', x === b));
+    if (curCodes().indexOf(sel) < 0) sel = curCodes()[0];
+    $('segSide').querySelectorAll('button')[1].textContent = tab === 'fut' ? '卖出/开空' : '卖出';
+    renderAll();
+  });
+}
 
 /* ================= 顶栏 ================= */
 function initLevSel() {
@@ -191,15 +213,16 @@ function renderBar() {
 function renderMarkets() {
   const box = $('markets');
   box.innerHTML = '';
-  for (const c of codes) {
-    const cfg = COUNTRIES[c], mk = engine.state.mk[c];
+  for (const c of curCodes()) {
+    const cfg = ALL[c], mk = engine.state.mk[c];
     const chg = (mk.mid - mk.prevClose) / mk.prevClose;
     const up = chg >= 0;
+    const sub = isFut(c) ? (cfg.name + ' · ' + cfg.city) : (cfg.code + ' · ' + cfg.currency + ' · ' + cfg.bank);
     const d = document.createElement('div');
     d.className = 'mcard' + (c === sel ? ' sel' : '');
     d.innerHTML =
-      '<div class="nm">' + cfg.name + '</div>' +
-      '<div class="cc">' + cfg.code + ' · ' + cfg.currency + ' · ' + cfg.bank + '</div>' +
+      '<div class="nm">' + (isFut(c) ? '📦 ' + cfg.name : cfg.name) + '</div>' +
+      '<div class="cc">' + sub + '</div>' +
       '<div class="px ' + (up ? 'up' : 'down') + '">' + fmt(mk.mid) + '</div>' +
       '<div class="chg ' + (up ? 'up' : 'down') + '">' + (up ? '▲ +' : '▼ ') + (chg * 100).toFixed(2) + '%</div>';
     d.onclick = () => { sel = c; renderAll(); };
@@ -209,8 +232,9 @@ function renderMarkets() {
 
 /* ================= 盘口 + 图 ================= */
 function renderBook() {
-  const cfg = COUNTRIES[sel], mk = engine.state.mk[sel];
-  $('mk-title').textContent = '盘口 · ' + cfg.name + '（1 ' + cfg.currency + ' = ' + fmt(mk.mid) + ' 久久币）';
+  const cfg = ALL[sel], mk = engine.state.mk[sel];
+  const unit = isFut(sel) ? cfg.name : cfg.currency;
+  $('mk-title').textContent = '盘口 · ' + cfg.name + '（1 ' + unit + ' = ' + fmt(mk.mid) + ' 久久币）';
   $('tra-title').textContent = '下注单 · ' + cfg.name;
   const body = $('bookBody');
   let h = '';
@@ -244,14 +268,21 @@ function drawChart(mk) {
 function renderPositions() {
   const box = $('posRows');
   const pos = engine.state.positions;
-  const list = codes.filter(c => pos[c] && pos[c].qty > 1e-9);
+  const list = curCodes().filter(c => pos[c] && Math.abs(pos[c].qty) > 1e-9);
   if (!list.length) { box.innerHTML = '<div class="r">空仓，还没当上韭菜</div>'; return; }
   box.innerHTML = list.map(c => {
     const p = pos[c], mk = engine.state.mk[c];
-    const avg = p.qty > 0 ? p.cost / p.qty : 0;
-    const pnl = p.qty * mk.mid - p.cost;
-    return '<div class="r"><span class="tag buy">持</span><span>' + COUNTRIES[c].currency + ' × ' + fmt(p.qty) + '</span>' +
-      '<span>均价 ' + fmt(avg) + '</span><span class="' + (pnl >= 0 ? 'up' : 'down') + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl) + '</span></div>';
+    const long = p.qty > 0;
+    const pnl = (mk.mid - p.avg) * p.qty;
+    let t = '';
+    if (p.expiry > 0) {
+      const s = Math.ceil((p.expiry - Date.now()) / 1000);
+      t = '<span class="' + (s < 10 ? 'down' : '') + '">⏳' + Math.max(0, s) + 's</span>';
+    }
+    return '<div class="r"><span class="tag ' + (long ? 'buy' : 'sell') + '">' + (long ? '多' : '空') + '</span>' +
+      '<span>' + ALL[c].name + ' × ' + fmt(Math.abs(p.qty)) + '</span>' +
+      '<span>均价 ' + fmt(p.avg) + '</span>' + t +
+      '<span class="' + (pnl >= 0 ? 'up' : 'down') + '">' + (pnl >= 0 ? '+' : '') + fmt(pnl) + '</span></div>';
   }).join('');
 }
 function renderOrders() {
@@ -259,10 +290,11 @@ function renderOrders() {
   const od = engine.state.orders;
   if (!od.length && !engine.state.fills.length) { box.innerHTML = '<div class="r">无委托，无成交</div>'; return; }
   let h = od.map(o => '<div class="r"><span class="tag ' + o.side + '">' + (o.side === 'buy' ? '挂买' : '挂卖') + '</span>' +
-    '<span>' + COUNTRIES[o.code].currency + ' @ ' + fmt(o.p) + '</span>' +
+    '<span>' + ALL[o.code].name + ' @ ' + fmt(o.p) + '</span>' +
     '<span>× ' + fmt(o.q) + '</span><button data-cancel="' + o.id + '" style="padding:1px 8px">撤</button></div>').join('');
   h += engine.state.fills.slice(0, 8).map(f => '<div class="r"><span class="tag ' + f.side + '">' + (f.side === 'buy' ? '成买' : '成卖') + '</span>' +
-    '<span>' + COUNTRIES[f.code].currency + ' @ ' + fmt(f.p) + '</span><span>× ' + fmt(f.q) + '</span></div>').join('');
+    '<span>' + ALL[f.code].name + ' @ ' + fmt(f.p) + '</span><span>× ' + fmt(f.q) + '</span>' +
+    (f.note ? '<span class="down">' + f.note + '</span>' : '') + '</div>').join('');
   box.innerHTML = h;
   box.querySelectorAll('[data-cancel]').forEach(b => b.onclick = () => { engine.cancelOrder(Number(b.dataset.cancel)); renderOrders(); engine.persist(); });
 }
@@ -285,7 +317,7 @@ function bindTrading() {
   $('btn-submit').onclick = () => {
     const qty = parseFloat($('in-qty').value) || 0;
     const limit = parseFloat($('in-price').value) || 0;
-    const r = engine.placeOrder(side, sel, qty, limit, otype === 'market');
+    const r = engine.placeOrder(side, sel, qty, limit, otype === 'market', tab === 'fut');
     if (!r.ok) { alert(r.msg); return; }
     if (r.msg) alert(r.msg);
     $('in-qty').value = '';
@@ -343,7 +375,7 @@ $('l-close').onclick = () => $('fog').classList.remove('show');
 
 /* ================= 主循环 ================= */
 function renderAll() { renderBar(); renderMarkets(); renderBook(); renderPositions(); renderOrders(); renderAdvice(); }
-initLevSel(); bindTrading();
+initLevSel(); bindTabs(); bindTrading();
 renderAll();
 setInterval(() => { engine.step(); engine.persist(); renderAll(); checkLiq(); }, 1000);
 </script></script>

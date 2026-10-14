@@ -98,5 +98,65 @@ function assert(name, cond, extra) {
   assert('T9 state 可 JSON 序列化', typeof s === 'string' && s.length > 100, s.length);
 }
 
+/* T10 期货做空盈利：开空 → 价格跌 → 赚钱 */
+{
+  const e = new Engine();
+  const code = 'SHG';
+  const r = e.placeOrder('sell', code, 100, 0, true, true);    // 裸卖空 100 声骸
+  assert('T10 裸空成功', r.ok && e.state.positions[code].qty === -100, r);
+  const cashAfter = e.state.cash;
+  assert('T10 开空现金增加', cashAfter > 300000, cashAfter);
+  e.state.mk[code].mid = e.state.mk[code].mid * 0.7;           // 强跌 30%
+  const pnl = (e.state.mk[code].mid - e.state.positions[code].avg) * e.state.positions[code].qty;
+  assert('T10 下跌空单盈利', pnl > 0, pnl);
+}
+
+/* T11 期货做空亏损：价格涨 → 亏钱且净值下降 */
+{
+  const e = new Engine();
+  const code = 'YSS';
+  const before = e.netWorth();
+  e.placeOrder('sell', code, 200, 0, true, true);
+  e.state.mk[code].mid = e.state.mk[code].mid * 1.1;           // 涨 10%
+  const pos = e.state.positions[code];
+  const pnl = (e.state.mk[code].mid - pos.avg) * pos.qty;
+  assert('T11 上涨空单亏损', pnl < 0, pnl);
+  assert('T11 净值下降', e.netWorth() < before, { before, now: e.netWorth() });
+}
+
+/* T12 外汇 tab 不能裸空（已有 T5 空仓卖出拒单，这里验证带仓后超卖也拒） */
+{
+  const e = new Engine();
+  e.placeOrder('buy', 'TVT', 10, 0, true);                     // 持多 10
+  const r = e.placeOrder('sell', 'TVT', 999, 0, true, false);  // 超卖平仓不允裸空
+  const pos = e.state.positions['TVT'];
+  assert('T12 外汇禁止超卖开空', pos && pos.qty > -1e-9 && pos.qty <= 10, pos);
+}
+
+/* T13 期货到期自动结算 */
+{
+  const e = new Engine();
+  const code = 'FSC';
+  e.placeOrder('buy', code, 50, 0, true, true);
+  const pos = e.state.positions[code];
+  assert('T13 期货仓带到期标记', pos && pos.expiry > 0, pos);
+  pos.expiry = 1;                                              // 强制到期
+  e.step();
+  assert('T13 到期已平仓', !(e.state.positions[code] && Math.abs(e.state.positions[code].qty) > 1e-9), e.state.positions[code]);
+  const lastFill = e.state.fills[0];
+  assert('T13 有到期结算记录', lastFill && lastFill.note === '合约到期结算', lastFill);
+}
+
+/* T14 空头爆仓：价格拉到净值穿零 → 强平 */
+{
+  const e = new Engine();
+  const code = 'SHG';
+  e.placeOrder('sell', code, 2000, 0, true, true);             // 开空 2000
+  e.state.mk[code].mid = 500;                                  // 暴涨到净值穿零
+  e._checkLiquidation();
+  assert('T14 空头穿零强平', e.state.liq === true, { liq: e.state.liq, lastLiq: e.state.lastLiq });
+  if (e.state.lastLiq) assert('T14 原因含强平', e.state.lastLiq.reason.indexOf('强制平仓') >= 0 || e.state.lastLiq.reason.indexOf('强平') >= 0, e.state.lastLiq.reason);
+}
+
 console.log(`\n结果: ${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

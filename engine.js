@@ -1,8 +1,9 @@
 /* ============================================================================
- * Kurumi FX 核心引擎
+ * Kurumi FX 核心引擎 v2
  * 纯逻辑模块，不依赖 DOM，可直接 node 运行测试。
  * 基准货币：久久币（JJB）—— 原型来自《FX战士久留美》女主角久留美。
- * 汇率语义：1 单位国家货币 = X JJB（X = mid）。
+ * 外汇语义：1 单位国家货币 = X JJB（X = mid）。
+ * 期货语义：游戏物资合约，支持做空（qty 为负）与到期自动结算。
  * 设计：均值回归行情 / 吃对手盘撮合 / 分级杠杆 / 净值强平。
  * 本文件为原创实现（仅借鉴公开项目思路），MIT 许可。
  * ==========================================================================*/
@@ -26,6 +27,21 @@ const COUNTRIES = {
 };
 /* 塔卫币为占位名 [TODO: 老板确认《明日方舟：终末地》官方货币后替换] */
 
+/* ---------------- 期货品种表：加一个品种 = 加一行 ----------------
+ * 同样走行情/撮合/杠杆/强平引擎，额外支持：做空（qty 为负）+ 到期结算。
+ * ------------------------------------------------------------------*/
+const COMMODITIES = {
+  FSC: { name: '风神瞳', city: '蒙德',   vendor: '提瓦特交易所', base: 66.6, vol: 0.0030 },
+  YSS: { name: '源石',   city: '塔卫二', vendor: '罗德岛贸易站', base: 88.8, vol: 0.0034 },
+  SHG: { name: '声骸',   city: '今州',   vendor: '声骸市场',     base: 55.5, vol: 0.0032 },
+  JZ:  { name: '晶簇',   city: '海特洛', vendor: '粉爪交易所',   base: 99.9, vol: 0.0028 },
+};
+
+/* 统一配置查找表 */
+const ALL = Object.assign({}, COUNTRIES, COMMODITIES);
+const FUT_CODES = Object.keys(COMMODITIES);
+const FUT_TTL = 60000;                 // 期货合约到期时限（毫秒）
+
 const DEFAULT_LEV = 1;                 // 默认杠杆 1 倍
 const LEV_OPTIONS = [1, 2, 5, 10, 50, 'inf'];   // 可选杠杆档位
 const START_CASH = 300000;             // 初始久久币（久留美开局 30 万）
@@ -40,7 +56,6 @@ const CRASH_TICKS = 10;                // 闪崩持续 tick
 const CRASH_FLOOR = 0.28;              // 闪崩最低价 = base × 0.28
 const NORMAL_FLOOR = 0.72;             // 常规最低价 = base × 0.72
 const EV_TTL = 16000;                  // 独家消息存活毫秒
-const ADV_EPOCH = 16000;               // 行情锚定纪元（毫秒）
 
 /* ---------------- 久留美话术（自写文案，按行情状态三态轮播） ---------------- */
 const SAY_SCRIPT = [
@@ -77,26 +92,29 @@ const fmtAmt = n => Math.round(n * 100).toLocaleString('zh-CN', { maximumFractio
  * ==========================================================================*/
 class Engine {
   constructor() {
-    this.codes = Object.keys(COUNTRIES);
+    this.fxCodes = Object.keys(COUNTRIES);
+    this.futCodes = FUT_CODES;
+    this.allCodes = this.fxCodes.concat(this.futCodes);
     this.state = {
       cash: START_CASH,          // 久久币余额（为负 = 融资负债）
       lev: DEFAULT_LEV,          // 杠杆档位：1/2/5/10/50/'inf'
-      positions: {},             // { [code]: { qty, cost } } 加权成本
+      positions: {},             // { [code]: { qty(可负=空), avg(均价), expiry(期货到期ms,0=无) } }
       orders: [],                // 限价挂单
       fills: [],                 // 最近成交
       trades: 0, equity: [], peak: 0, maxDD: 0, netStart: null,
       holding: false, liq: false, sayN: 0,
       evIdx: -1, evEnd: 0, evMult: 0, netAtEntry: 0,
       crash: null,               // { code, left }
-      // 行情（每货币一个）
+      lastLiq: null,             // 最近一次爆仓/到期结算信息
+      // 行情（外汇 + 期货，每品种一个）
       mk: {},
     };
-    for (const c of this.codes) this.state.mk[c] = this._seedMarket(c);
+    for (const c of this.allCodes) this.state.mk[c] = this._seedMarket(c);
   }
 
   /* ---------- 行情：预生成历史 K 线 + 盘口 ---------- */
   _seedMarket(code) {
-    const cfg = COUNTRIES[code];
+    const cfg = ALL[code];
     let p = cfg.base * (1 + (Math.random() * 2 - 1) * 0.02);
     const m1 = [];
     for (let i = 0; i < HIST; i++) {
@@ -130,7 +148,7 @@ class Engine {
 
   /* ---------- 行情推进：均值回归 + 事件冲击 + 闪崩 ---------- */
   walk(code) {
-    const cfg = COUNTRIES[code];
+    const cfg = ALL[code];
     const mk = this.state.mk[code];
     const dev = (mk.mid - cfg.base) / cfg.base;
     let chg;
@@ -142,9 +160,8 @@ class Engine {
       if (Math.random() < 0.06) chg += (Math.random() * 2 - 1) * cfg.vol * 2.5;  // 6% 概率异动
       chg = clamp(chg, -cfg.vol * 3, cfg.vol * 3);
     }
-    const floor = this.state.crash && this.state.crash.code === code && this.state.crash.left >= 0
-      ? cfg.base * CRASH_FLOOR : cfg.base * NORMAL_FLOOR;
-    mk.mid = clamp(mk.mid * (1 + chg), floor, cfg.base * 1.32);
+    const floorN = cfg.base * (this.state.crash && this.state.crash.code === code && this.state.crash.left >= 0 ? CRASH_FLOOR : NORMAL_FLOOR);
+    mk.mid = clamp(mk.mid * (1 + chg), floorN, cfg.base * 1.32);
     mk.high = Math.max(mk.high, mk.mid);
     mk.low = Math.min(mk.low, mk.mid);
     mk.line.push(mk.mid);
@@ -165,19 +182,19 @@ class Engine {
     return lev === 'inf' ? Infinity : Math.max(0, this.state.cash) * lev;
   }
   tradeDebt() { return Math.max(0, -this.state.cash); }     // 融资负债 = 余额透支部分
-  posValue() {                                                // 持仓总市值
+  posValue() {                                                // 持仓总市值（空单 qty 为负，自然扣减）
     let v = 0;
-    for (const c of this.codes) {
+    for (const c of this.allCodes) {
       const pos = this.state.positions[c];
-      if (pos && pos.qty > 1e-9) v += pos.qty * this.state.mk[c].mid;
+      if (pos && Math.abs(pos.qty) > 1e-9) v += pos.qty * this.state.mk[c].mid;
     }
     return v;
   }
-  netWorth() { return this.state.cash + this.posValue(); }   // 净值 = 现金 + 市值（骨架阶段无借贷）
+  netWorth() { return this.state.cash + this.posValue(); }   // 净值 = 现金 + 持仓市值
   levText() { return this.state.lev === 'inf' ? '∞' : this.state.lev + '×'; }
 
   /* ---------- 撮合：吃对手盘，逐档消耗 ----------
-   * budget: 买入预算上限；sweep: 允许吃穿盘口（市价融资单/强平），
+   * budget: 买入预算上限；sweep: 允许吃穿盘口（市价单/强平/做空），
    * 剩余按最后档 ±3% 滑点成交，模拟隐藏深度。 */
   _match(side, code, qty, limit, isMarket, budget, sweep) {
     const mk = this.state.mk[code];
@@ -232,62 +249,83 @@ class Engine {
   /* 大单价格冲击：成交后把 mid 推向成交方向，最多 IMPACT_CAP */
   _impact(code, side, filled) {
     if (filled <= 0) return;
-    const cfg = COUNTRIES[code];
+    const cfg = ALL[code];
     const mk = this.state.mk[code];
     const imp = Math.min(IMPACT_CAP, filled * mk.mid / 180000 * 0.01);
     mk.mid = clamp(mk.mid * (1 + (side === 'buy' ? 1 : -1) * imp), cfg.base * 0.7, cfg.base * 1.34);
     this._syncBook(mk, cfg);
   }
 
-  /* ---------- 记账 ---------- */
-  _bookBuy(code, filled, cost) {
-    const pos = this.state.positions[code] || { qty: 0, cost: 0 };
-    pos.qty += filled; pos.cost += cost;
-    this.state.positions[code] = pos;
-    this.state.cash = r2(this.state.cash - cost);
-    this.state.mk[code].vol += filled;
-  }
-  _bookSell(code, filled, cost) {
-    const pos = this.state.positions[code];
-    if (pos && pos.qty > 1e-9) {
-      const avg = pos.qty > 0 ? pos.cost / pos.qty : 0;
-      const use = Math.min(filled, pos.qty);
-      pos.qty -= use; pos.cost -= avg * use;
-      if (pos.qty <= 1e-9) delete this.state.positions[code];
+  /* ---------- 记账（统一多空） ----------
+   * delta > 0 买入（付钱），delta < 0 卖出/做空（收钱），delta 可与现仓反向（平仓/反手）。
+   * 持仓格式 { qty, avg, expiry }，盈亏统一 = (mid - avg) × qty。 */
+  _bookTrade(code, delta, px, isFut) {
+    const pos = this.state.positions[code] || { qty: 0, avg: 0, expiry: 0 };
+    const oldQty = pos.qty, newQty = r2(oldQty + delta);
+    this.state.cash = r2(this.state.cash - delta * px);       // 买负现金流、卖正现金流
+    if (Math.abs(newQty) < 1e-9) {
+      delete this.state.positions[code];
+    } else {
+      if (oldQty === 0 || delta * oldQty > 0) {               // 开新仓 / 同向加仓：加权均价
+        pos.avg = (Math.abs(oldQty) * pos.avg + Math.abs(delta) * px) / Math.abs(newQty);
+      } else if (Math.abs(delta) > Math.abs(oldQty)) {        // 平仓并反手：新仓按现价
+        pos.avg = px;
+      }                                                       // 纯平仓：avg 不动
+      pos.qty = newQty;
+      if (isFut && oldQty === 0) pos.expiry = Date.now() + FUT_TTL;   // 期货新仓登记到期
+      else if (isFut && pos.expiry === 0) pos.expiry = Date.now() + FUT_TTL;   // 空仓加仓后补偿
+      else if (!isFut) pos.expiry = 0;
+      this.state.positions[code] = pos;
     }
-    this.state.cash = r2(this.state.cash + cost);
-    this.state.mk[code].vol += filled;
   }
 
-  /* ---------- 下单 ---------- */
-  placeOrder(side, code, qty, limit, isMarket) {
+  /* ---------- 下单 ----------
+   * allowShort: 允许裸卖空（期货 tab）；外汇 tab 同侧仓位不足则拒单。 */
+  placeOrder(side, code, qty, limit, isMarket, allowShort) {
     if (!qty || qty <= 0) return { ok: false, msg: '请输入委托数量' };
     if (!isMarket && (!limit || limit <= 0)) return { ok: false, msg: '请输入委托价格' };
+    const pos = this.state.positions[code];
+    const posQty = pos ? pos.qty : 0;
+    const isFut = this.futCodes.indexOf(code) >= 0;
+
+    /* ---- 买入 ---- */
     if (side === 'buy') {
-      const budget = this.buyingPower();
-      if (!(budget > 0)) return { ok: false, msg: '久久币余额不足' };
-      const res = this._match(side, code, qty, limit, isMarket, budget, !!(isMarket && this.state.lev !== 1));
+      // 平空（买回）不卡预算；开多/加多按购买力限制
+      const isCover = posQty < -1e-9;                          // 现为空头 → 买回 = 平空
+      const budget = isCover ? null : this.buyingPower();
+      if (!isCover && !(budget > 0)) return { ok: false, msg: '久久币余额不足' };
+      const res = this._match(side, code, qty, limit, isMarket, budget, isMarket);
       if (res.filled > 0) {
-        this._bookBuy(code, res.filled, res.cost);
+        this._bookTrade(code, res.filled, res.avg, isFut);
         this._pushFill(side, code, res.avg, res.filled);
-        this._impact(code, side, res.filled);
       }
       if (!isMarket && res.remain > 1e-6) {
+        if (isCover) return { ok: false, msg: '盘口深度不足，无法挂单平空' };
         const need = limit * res.remain;
-        if (need <= this.buyingPower() + 1e-6) this._postOrder(side, code, res.remain, limit);
-        else if (res.filled <= 0) return { ok: false, msg: '资金不足，无法挂单' };
+        if (need <= this.buyingPower() + 1e-6) {
+          this._postOrder(side, code, res.remain, limit);
+          return { ok: true, filled: res.filled, remain: res.remain, msg: '部分成交，剩余已挂单' };
+        }
+        if (res.filled <= 0) return { ok: false, msg: '资金不足，无法挂单' };
       }
-      return res.filled > 0 ? { ok: true, filled: res.filled, remain: res.remain } : { ok: true, filled: 0, msg: '已挂单等待成交' };
+      return { ok: true, filled: res.filled, remain: res.remain };
     }
-    const pos = this.state.positions[code];
-    if (!pos || pos.qty < qty - 1e-9) return { ok: false, msg: '持仓不足' };
-    const res = this._match(side, code, qty, limit, isMarket, null, false);
+
+    /* ---- 卖出 ---- */
+    const hasPos = Math.abs(posQty) > 1e-9;
+    if (hasPos && !allowShort && posQty >= -1e-9 && qty > posQty + 1e-9) {
+      return { ok: false, msg: '持仓不足（外汇区不可裸空）' };   // 外汇区：只能平仓，超卖拒
+    }
+    if (!hasPos && !allowShort) return { ok: false, msg: '持仓不足' };   // 外汇 tab 不能裸空
+    const res = this._match(side, code, qty, limit, isMarket, null, isMarket);
     if (res.filled > 0) {
-      this._bookSell(code, res.filled, res.cost);
+      this._bookTrade(code, -res.filled, res.avg, isFut);
       this._pushFill(side, code, res.avg, res.filled);
-      this._impact(code, side, res.filled);
     }
-    if (!isMarket && res.remain > 1e-6 && pos.qty >= res.remain - 1e-9) this._postOrder(side, code, res.remain, limit);
+    if (!isMarket && res.remain > 1e-6) {
+      this._postOrder(side, code, res.remain, limit);
+      return { ok: true, filled: res.filled, remain: res.remain, msg: '部分成交，剩余已挂单' };
+    }
     return { ok: true, filled: res.filled, remain: res.remain };
   }
 
@@ -297,9 +335,9 @@ class Engine {
   cancelOrder(id) {
     this.state.orders = this.state.orders.filter(o => o.id !== id);
   }
-  _pushFill(side, code, p, q) {
-    const cfg = COUNTRIES[code];
-    this.state.fills.unshift({ side, code, p: r2(p), q: r2(q), cur: cfg.currency, t: Date.now() });
+  _pushFill(side, code, p, q, note) {
+    const cfg = ALL[code];
+    this.state.fills.unshift({ side, code, p: r2(p), q: r2(q), cur: cfg.currency || cfg.name, note: note || '', t: Date.now() });
     if (this.state.fills.length > 30) this.state.fills.length = 30;
     this.state.trades++;
   }
@@ -311,8 +349,7 @@ class Engine {
       const o = this.state.orders[i];
       const res = this._match(o.side, o.code, o.q, o.p, false, null, false);
       if (res.filled <= 0) continue;
-      if (o.side === 'buy') this._bookBuy(o.code, res.filled, res.cost);
-      else this._bookSell(o.code, res.filled, res.cost);
+      this._bookTrade(o.code, o.side === 'buy' ? res.filled : -res.filled, res.avg, this.futCodes.indexOf(o.code) >= 0);
       this._pushFill(o.side, o.code, res.avg, res.filled);
       this._impact(o.code, o.side, res.filled);
       o.q = r2(o.q - res.filled); changed = true;
@@ -323,11 +360,32 @@ class Engine {
 
   /* ---------- 主循环 ---------- */
   step() {
-    for (const c of this.codes) this.walk(c);
+    for (const c of this.allCodes) this.walk(c);
     this.matchPending();
+    this._settleExpired();
     this._trackEquity();
     this._checkLiquidation();
     this._rollEvent();
+  }
+
+  /* 期货到期：按市价自动全平对应合约 */
+  _settleExpired() {
+    const now = Date.now();
+    for (const c of this.allCodes) {
+      const pos = this.state.positions[c];
+      if (!pos || Math.abs(pos.qty) < 1e-9 || !(pos.expiry > 0) || now < pos.expiry) continue;
+      const qty = pos.qty;
+      const side = qty > 0 ? 'sell' : 'buy';                     // 多单卖出平，空单买回平
+      const res = this._match(side, c, Math.abs(qty), 0, true, null, true);
+      if (res.filled > 0) {
+        this._bookTrade(c, qty > 0 ? -res.filled : res.filled, res.avg, true);
+        this._pushFill(side, c, res.avg, res.filled, '合约到期结算');
+        this._impact(c, side, res.filled);
+      } else {
+        delete this.state.positions[c];
+      }
+      this.state.lastLiq = { reason: '合约到期结算 · ' + ALL[c].name, lost: 0, debt: r2(this.tradeDebt()), net: r2(this.netWorth()) };
+    }
   }
 
   /* ---------- 战绩 ---------- */
@@ -341,29 +399,31 @@ class Engine {
     if (dd > this.state.maxDD) this.state.maxDD = dd;
   }
 
-  /* ---------- 强平：净值耗尽（cash 为负且净值<=0）时全平持仓 ---------- */
+  /* ---------- 强平：净值穿零且还有仓位时全平 ---------- */
   _checkLiquidation() {
     if (this.state.liq) return;
-    const anyPos = this.codes.some(c => (this.state.positions[c] || {}).qty > 1e-9);
+    const anyPos = this.allCodes.some(c => Math.abs((this.state.positions[c] || {}).qty || 0) > 1e-9);
     if (!anyPos) {
       if (this.state.holding) { this.state.holding = false; this.state.crash = null; }
       return;
     }
     const forced = this.state.crash && this.state.crash.left <= 0;
-    if (forced || (this.tradeDebt() > 0 && this.netWorth() <= 0)) this.liquidate(forced ? '闪崩后强制平仓' : '保证金耗尽，强制平仓');
+    if (forced || this.netWorth() <= 0) this.liquidate(forced ? '闪崩后强制平仓' : '保证金耗尽，强制平仓');
   }
 
   liquidate(reason) {
     const base = this.state.netAtEntry > 0 ? this.state.netAtEntry : this.netWorth();
-    let proceeds = 0;
-    for (const c of this.codes) {
+    for (const c of this.allCodes) {
       const pos = this.state.positions[c];
-      if (!pos || pos.qty <= 1e-9) continue;
-      const res = this._match('sell', c, pos.qty, 0, true, null, true);
+      if (!pos || Math.abs(pos.qty) < 1e-9) continue;
+      const qty = pos.qty;
+      const side = qty > 0 ? 'sell' : 'buy';                     // 多单卖出平，空单买回平
+      const res = this._match(side, c, Math.abs(qty), 0, true, null, true);
       if (res.filled > 0) {
-        this._bookSell(c, res.filled, res.cost);
-        this._pushFill('sell', c, res.avg, res.filled);
-        proceeds += res.cost;
+        this._bookTrade(c, qty > 0 ? -res.filled : res.filled, res.avg, this.futCodes.indexOf(c) >= 0);
+        this._pushFill(side, c, res.avg, res.filled, reason);
+      } else {
+        delete this.state.positions[c];
       }
     }
     const lost = Math.max(0, base - this.netWorth());
@@ -373,7 +433,7 @@ class Engine {
     return this.state.lastLiq;
   }
 
-  /* ---------- 久留美：话术 + 推荐 ---------- */
+  /* ---------- 久留美：话术 + 推荐（主线推外汇货币） ---------- */
   currentEvent() {
     const now = Date.now();
     if (this.state.evIdx < 0 || now >= this.state.evEnd) {
@@ -406,7 +466,7 @@ class Engine {
     if (this.state.liq || this.state.holding) return { ok: false, msg: '当前不可下单' };
     this.state.lev = 'inf';
     this.state.netAtEntry = this.netWorth();
-    const res = this.placeOrder('buy', adv.code, adv.qty, 0, true);
+    const res = this.placeOrder('buy', adv.code, adv.qty, 0, true, false);
     if (!res.ok) { this.state.lev = DEFAULT_LEV; return res; }
     this.state.holding = true;
     this.state.crash = { code: adv.code, left: CRASH_TICKS };
@@ -424,9 +484,12 @@ class Engine {
       const saved = JSON.parse(raw);
       if (!saved || typeof saved.cash !== 'number') return false;
       for (const k of Object.keys(saved)) this.state[k] = saved[k];
-      // 存档可能缺新增国家的行情（旧存档兼容）：缺了就重建
-      for (const c of this.codes) {
+      // 旧存档兼容：{qty,cost} → {qty,avg}；行情缺失重建
+      for (const c of this.allCodes) {
         if (!this.state.mk[c] || !this.state.mk[c].mid) this.state.mk[c] = this._seedMarket(c);
+        const pos = this.state.positions[c];
+        if (pos && pos.cost != null && pos.avg == null) { pos.avg = Math.abs(pos.qty) > 1e-9 ? pos.cost / pos.qty : 0; }
+        if (pos && pos.expiry == null) pos.expiry = 0;
       }
       return true;
     } catch (e) { return false; }
@@ -439,7 +502,7 @@ class Engine {
 
 /* 测试钩子：浏览器挂 window，node 挂 module.exports */
 if (typeof window !== 'undefined') {
-  window.Engine = Engine; window.COUNTRIES = COUNTRIES;
+  window.Engine = Engine; window.COUNTRIES = COUNTRIES; window.COMMODITIES = COMMODITIES;
   window.LEV_OPTIONS = LEV_OPTIONS; window.EVENTS = EVENTS;
 }
-if (typeof module !== 'undefined' && module.exports) module.exports = { Engine, COUNTRIES, LEV_OPTIONS, EVENTS };
+if (typeof module !== 'undefined' && module.exports) module.exports = { Engine, COUNTRIES, COMMODITIES, LEV_OPTIONS, EVENTS };
