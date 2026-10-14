@@ -28,7 +28,7 @@ const COUNTRIES = {
 
 const DEFAULT_LEV = 1;                 // 默认杠杆 1 倍
 const LEV_OPTIONS = [1, 2, 5, 10, 50, 'inf'];   // 可选杠杆档位
-const START_CASH = 100000;             // 初始久久币
+const START_CASH = 300000;             // 初始久久币（久留美开局 30 万）
 const TICK_MS = 1000;                  // 行情 tick 间隔
 const HIST = 90;                       // 预生成 K 线根数
 const LV = 5;                          // 盘口档数

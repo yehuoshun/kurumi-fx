@@ -15,9 +15,9 @@ function assert(name, cond, extra) {
   const qty = 10;
   const r = e.placeOrder('buy', code, qty, 0, true);
   assert('T1 市价单成交', r.ok && r.filled > 0, r);
-  assert('T1 现金减少', e.state.cash < 100000, e.state.cash);
+  assert('T1 现金减少', e.state.cash < 300000, e.state.cash);
   assert('T1 持仓>0', e.state.positions[code].qty > 0, e.state.positions[code]);
-  assert('T1 净值不变（零和：现金+市值=初始）', Math.abs(e.netWorth() - 100000) < 1, e.netWorth());
+  assert('T1 净值不变（零和：现金+市值=初始）', Math.abs(e.netWorth() - 300000) < 1, e.netWorth());
 }
 
 /* T2 边界：杠杆 2 倍购买力 = 现金×2 */
