@@ -24,7 +24,7 @@ function assert(name, cond, extra) {
 {
   const e = new Engine();
   e.state.lev = 2;
-  assert('T2 2x购买力', Math.abs(e.buyingPower() - 200000) < 0.01, e.buyingPower());
+  assert('T2 2x购买力', Math.abs(e.buyingPower() - 600000) < 0.01, e.buyingPower());
 }
 
 /* T3 边界：无穷杠杆购买力 Infinity */
@@ -82,7 +82,7 @@ function assert(name, cond, extra) {
   const e = new Engine();
   e.state.lev = 50;
   const code = 'HLT';
-  const r = e.placeOrder('buy', code, 25000, 0, true); // 50x 杠杆满仓买入（市值≈500万）
+  const r = e.placeOrder('buy', code, 100000, 0, true); // 50x 杠杆满仓买入（市值≈2000万）
   assert('T8 高杠杆买入成交', r.ok && r.filled > 0, r);
   let liq = false;
   for (let i = 0; i < 200 && !liq; i++) { e.step(); liq = e.state.liq; }

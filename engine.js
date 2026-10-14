@@ -119,8 +119,8 @@ class Engine {
     mk.asks = mk.asks.length ? mk.asks : [];
     mk.bids = mk.bids.length ? mk.bids : [];
     for (let i = 0; i < LV; i++) {
-      if (!mk.asks[i]) mk.asks[i] = { p: 0, v: 0 };
-      if (!mk.bids[i]) mk.bids[i] = { p: 0, v: 0 };
+      if (!mk.asks[i]) mk.asks[i] = { p: 0, v: Math.round(60 + Math.random() * 380) };   // 首建档位直接给深度
+      if (!mk.bids[i]) mk.bids[i] = { p: 0, v: Math.round(60 + Math.random() * 380) };
       mk.asks[i].p = mk.mid + gap * (i + 1);
       mk.bids[i].p = mk.mid - gap * (i + 1);
       mk.asks[i].v = clamp((mk.asks[i].v || 0) + (Math.random() * 2 - 1) * 70, 30, 2600);
