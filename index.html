@@ -157,12 +157,11 @@
 <script src="engine.js"></script>
 <script>
 'use strict';
-const { Engine, COUNTRIES, COMMODITIES, LEV_OPTIONS } = window;
+/* engine.js 已在全局声明：Engine / COUNTRIES / COMMODITIES / LEV_OPTIONS / ALL，此处直接引用 */
 
 /* ================= DOM ================= */
 const $ = id => document.getElementById(id);
 const fmt = n => (Math.round(n * 100) / 100).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
-const ALL = Object.assign({}, COUNTRIES, COMMODITIES);
 
 const engine = new Engine();
 engine.load();
